@@ -1,6 +1,6 @@
 {
   "name": "@zeroleaks/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official TypeScript SDK for the ZeroLeaks developer API",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -11,15 +11,27 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./ai-sdk": {
+      "types": "./dist/ai-sdk.d.ts",
+      "import": "./dist/ai-sdk.js",
+      "require": "./dist/ai-sdk.cjs"
+    },
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "import": "./dist/openai.js",
+      "require": "./dist/openai.cjs"
     }
   },
   "files": [
     "dist",
+    "assets",
+    "examples",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts --outdir dist --target node --format esm --sourcemap=external && bun build src/index.ts --outfile dist/index.cjs --target node --format cjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "build": "tsup src/index.ts src/ai-sdk.ts src/openai.ts --format esm,cjs --sourcemap --clean --external ai --external openai --out-dir dist && tsc -p tsconfig.json --emitDeclarationOnly",
     "test": "bun test",
     "prepublishOnly": "bun run test && bun run build"
   },
@@ -39,6 +51,7 @@
     "sdk"
   ],
   "license": "MIT",
+  "sideEffects": false,
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -49,6 +62,21 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.4",
+    "ai": "^6.0.209",
+    "openai": "^6.45.0",
+    "tsup": "^8.5.0",
     "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "ai": ">=6.0.0",
+    "openai": ">=6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
   }
 }

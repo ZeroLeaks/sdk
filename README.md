@@ -1,64 +1,88 @@
 # @zeroleaks/sdk
 
-Official TypeScript SDK for the ZeroLeaks developer API. Run prompt-security scans, test deployed agents, scan agent skills, and retrieve reports from Node.js or Bun.
+<p><img src="./assets/zeroleaks-sdk.svg" alt="ZeroLeaks SDK" width="88" height="88" /></p>
 
-## Installation
+Official TypeScript SDK for ZeroLeaks. Run hosted red-team probes through your actual application agent—including its model settings, instructions, memory, middleware, tools, and tool execution loop.
+
+## Install
 
 ```bash
 bun add @zeroleaks/sdk
-# or
-npm install @zeroleaks/sdk
+# or: npm install @zeroleaks/sdk
 ```
 
-Set your server-side API key:
-
-```env
+```bash
 ZEROLEAKS_API_KEY=zl_live_...
 ```
 
-## Quick start
+## Wrap any production agent
 
 ```typescript
-import { ZeroLeaks } from "@zeroleaks/sdk";
+import { ZeroLeaks, createRuntimeTarget } from "@zeroleaks/sdk";
 
 const zeroleaks = new ZeroLeaks();
-
-const { scan, report } = await zeroleaks.scans.run({
-  systemPrompt: "You are a customer support assistant.",
-  scanMode: "dual",
-});
-
-console.log(scan.status, report.overallScore);
-```
-
-## Deployed-agent scan
-
-```typescript
-const { id: configId } = await zeroleaks.agentConfigs.create({
-  name: "Support agent",
-  endpointUrl: "https://api.example.com/chat",
-  authMethod: "bearer",
-  authValue: process.env.AGENT_API_KEY,
-  requestFormat: {
-    method: "POST",
-    messageField: "message",
-    responseField: "answer",
+const target = createRuntimeTarget({
+  definition: {
+    name: "Production support agent",
+    provider: "custom",
+    tools: productionToolDefinitions,
   },
+  invoke: ({ messages, sessionId, signal }) =>
+    runProductionAgent({ messages, sessionId, signal }),
+  reset: (sessionId) => resetProductionAgent(sessionId),
 });
 
-const result = await zeroleaks.agentScans.run(configId);
-console.log(result.report?.overallScore);
+const { report } = await zeroleaks.runtimeScans.run(target);
+console.log(report.overallScore, report.toolTrace);
 ```
 
-## Skill scan
+## AI SDK
 
 ```typescript
-const result = await zeroleaks.skillScans.run({
-  source: "https://github.com/example/agent-skills/tree/main/research",
-  mode: "full",
-});
+import { aiSdk } from "@zeroleaks/sdk/ai-sdk";
 
-console.log(result.report);
+const target = aiSdk({ agent: productionAgent });
+await zeroleaks.runtimeScans.run(target);
 ```
 
-API keys must only be used in server-side code. See the full documentation at `https://zeroleaks.ai/docs/sdk`.
+You can also pass normal `ToolLoopAgent` settings directly. All configured tools are included by default; input/output schemas, calls, results, errors, approval metadata, and provider-executed tools are preserved where available.
+
+## OpenAI
+
+```typescript
+import { openAI } from "@zeroleaks/sdk/openai";
+
+const target = openAI.responses({
+  client: openai,
+  request: {
+    model: "gpt-5",
+    instructions,
+    tools,
+  },
+  toolExecutors,
+});
+
+await zeroleaks.runtimeScans.run(target);
+```
+
+Both Responses API and Chat Completions function-tool loops are supported.
+
+## Other scans
+
+```typescript
+await zeroleaks.scans.run({ systemPrompt, scanMode: "full" });
+await zeroleaks.endpointScans.run(endpointConfigId);
+await zeroleaks.skillScans.run({ source: skillRepository, mode: "full" });
+```
+
+`agentConfigs` and `agentScans` remain compatibility aliases for `endpointConfigs` and `endpointScans`.
+
+## Security
+
+Run runtime scans with the same policy and tool-control code as production, but use isolated databases, test tenants, sink integrations, and scan-specific credentials for tools that can create irreversible side effects.
+
+API keys are server credentials. Never expose them in browser bundles.
+
+Documentation: `https://zeroleaks.ai/docs/sdk`
+
+License: MIT

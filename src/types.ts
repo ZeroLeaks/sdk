@@ -162,16 +162,29 @@ export interface WaitOptions<T> {
 
 export interface AgentTool {
   name: string;
-  description: string;
+  description?: string;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  strict?: boolean;
+  type?: string;
+  providerOptions?: unknown;
+  definition?: unknown;
+  [key: string]: unknown;
 }
 
 export type AgentAuthMethod = "none" | "bearer" | "api_key" | "custom_header";
 
 export interface AgentRequestFormat {
   method: "POST" | "GET";
+  headers?: Record<string, string>;
   bodyTemplate?: string;
   messageField?: string;
+  messagesField?: string;
+  sessionField?: string;
   responseField?: string;
+  toolCallsField?: string;
+  finishReasonField?: string;
+  usageField?: string;
 }
 
 export interface AgentConfigInput {
@@ -219,6 +232,8 @@ export interface AgentReport {
   summary: string;
   recommendations: string[];
   conversationLog: unknown[];
+  toolTrace?: RuntimeToolCall[];
+  target?: RuntimeTargetDefinition;
   createdAt: number;
   [key: string]: unknown;
 }
@@ -244,6 +259,125 @@ export interface AgentScanListItem {
 
 export interface AgentScanListResponse {
   scans: AgentScanListItem[];
+}
+
+export type EndpointTool = AgentTool;
+export type EndpointAuthMethod = AgentAuthMethod;
+export type EndpointRequestFormat = AgentRequestFormat;
+export type EndpointConfigInput = AgentConfigInput;
+export type EndpointConfig = AgentConfig;
+export type EndpointScan = AgentScan;
+export type EndpointReport = AgentReport;
+export type EndpointScanResult = AgentScanResult;
+
+export type RuntimeMessageRole =
+  | "assistant"
+  | "developer"
+  | "system"
+  | "tool"
+  | "user";
+
+export interface RuntimeTargetMessage {
+  role: RuntimeMessageRole | string;
+  content: unknown;
+  name?: string;
+  toolCallId?: string;
+  [key: string]: unknown;
+}
+
+export interface RuntimeToolCall {
+  id?: string;
+  name: string;
+  arguments?: unknown;
+  result?: unknown;
+  error?: string;
+  providerExecuted?: boolean;
+}
+
+export interface RuntimeTargetDefinition {
+  name: string;
+  provider: string;
+  model?: string;
+  instructions?: unknown;
+  tools?: AgentTool[];
+  metadata?: unknown;
+}
+
+export interface RuntimeTargetInvocation {
+  runtimeScanId: string;
+  eventId: string;
+  sessionId: string;
+  message: string;
+  messages: RuntimeTargetMessage[];
+  signal?: AbortSignal;
+}
+
+export interface RuntimeTargetResponse {
+  text: string;
+  toolCalls?: RuntimeToolCall[];
+  finishReason?: string;
+  usage?: unknown;
+  metadata?: unknown;
+  messages?: RuntimeTargetMessage[];
+}
+
+export interface RuntimeScanTarget {
+  describe: () => Promise<RuntimeTargetDefinition> | RuntimeTargetDefinition;
+  invoke: (
+    invocation: RuntimeTargetInvocation
+  ) => Promise<RuntimeTargetResponse | string> | RuntimeTargetResponse | string;
+  reset?: (sessionId: string) => Promise<void> | void;
+}
+
+export interface RuntimeScanOptions {
+  workspaceId?: string;
+  targetModel?: string;
+  temperature?: number;
+  reasoningEffort?: ReasoningEffort;
+  knowledgeProfile?: KnowledgeProfile;
+  attackSurfaces?: AttackSurface[];
+  usePineconeKnowledge?: boolean;
+  maxAdaptiveCandidates?: number;
+}
+
+export interface CreateRuntimeScanResponse {
+  runtimeScanId: string;
+  workflowRunId: string;
+  status: ScanStatus;
+  processingMethod: "sdk-relay";
+}
+
+export interface RuntimeScan {
+  _id: string;
+  status: ScanStatus;
+  target: RuntimeTargetDefinition;
+  options?: RuntimeScanOptions;
+  currentPhase?: string;
+  workflowRunId?: string;
+  report?: AgentReport;
+  error?: string;
+  runnerLastSeenAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
+export interface RuntimeScanListResponse {
+  scans: RuntimeScan[];
+}
+
+export interface RuntimeScanEvent {
+  id: string;
+  kind: "invoke" | "reset";
+  sessionId: string;
+  message?: string;
+  claimToken: string;
+}
+
+export interface RuntimeRunOptions extends WaitOptions<RuntimeScan> {
+  eventPollIntervalMs?: number;
+  onEvent?: (event: RuntimeScanEvent) => void | Promise<void>;
+  scan?: RuntimeScanOptions;
 }
 
 export type SkillScanMode = "review" | "risk" | "behavior" | "full";
@@ -319,9 +453,21 @@ export interface CapabilitiesResponse {
   reasoningEfforts: ReasoningEffort[];
   knowledgeProfiles: KnowledgeProfile[];
   attackSurfaces: AttackSurface[];
+  runtimeScans?: {
+    enabled: boolean;
+    adapters: string[];
+    fullToolDefinitions: boolean;
+    toolExecutionTracing: boolean;
+    sessionReset: boolean;
+  };
+  endpointScans?: {
+    enabled: boolean;
+    compatibilityAliases: string[];
+  };
   limits: {
     minimumSystemPromptCharacters: number;
     maximumAdaptiveCandidates: number;
     maximumSkillArchiveBytes: number;
+    maximumRuntimeTools?: number;
   };
 }
