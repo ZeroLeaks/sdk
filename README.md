@@ -34,6 +34,21 @@ const { report } = await zeroleaks.runtimeScans.run(target);
 console.log(report.overallScore, report.toolTrace);
 ```
 
+## Runtime execution in v0.2.1
+
+Runtime scans execute independent sessions concurrently, with a default concurrency of `8` and a maximum of `16`. Events within the same multi-turn session always remain ordered.
+
+```typescript
+const { report } = await zeroleaks.runtimeScans.run(target, {
+  eventConcurrency: 4,
+  workerStallTimeoutMs: 6 * 60_000,
+});
+```
+
+The hosted engine runs extraction, injection, and agent-specific tracks in parallel and checkpoints long extraction scans. If the hosted worker stops making progress, the SDK cancels the run instead of polling indefinitely.
+
+Upgrade with `bun add @zeroleaks/sdk@^0.2.1` or `npm install @zeroleaks/sdk@^0.2.1`. This release does not require application code changes.
+
 ## AI SDK
 
 ```typescript
