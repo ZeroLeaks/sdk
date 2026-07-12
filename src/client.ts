@@ -37,7 +37,7 @@ import type {
   WaitOptions,
 } from "./types";
 
-const SDK_VERSION = "0.2.1";
+const SDK_VERSION = "0.2.2";
 const DEFAULT_BASE_URL = "https://zeroleaks.ai";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 2000;

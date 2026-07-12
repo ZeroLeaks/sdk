@@ -248,7 +248,7 @@ describe("ZeroLeaks", () => {
           messages,
         }),
       },
-      { eventPollIntervalMs: 1 }
+      { eventPollIntervalMs: 1, scan: { scanMode: "full" } }
     );
 
     expect(result.report.overallScore).toBe(80);
@@ -257,6 +257,7 @@ describe("ZeroLeaks", () => {
     expect(JSON.stringify(completedEvents[1])).toContain('"count":"1"');
     expect(JSON.stringify(createBody)).toContain("lookup_customer");
     expect(JSON.stringify(createBody)).toContain("properties");
+    expect(JSON.stringify(createBody)).toContain('"scanMode":"full"');
   });
 
   test("executes runtime relay sessions concurrently", async () => {

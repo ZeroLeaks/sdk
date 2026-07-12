@@ -13,6 +13,7 @@ export type Vulnerability = "critical" | "high" | "medium" | "low" | "secure";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 export type KnowledgeProfile = "baseline" | "production" | "research";
+export type RuntimeScanMode = "full" | "quick";
 export type AttackSurface =
   | "direct_chat"
   | "indirect_content"
@@ -331,6 +332,7 @@ export interface RuntimeScanTarget {
 
 export interface RuntimeScanOptions {
   workspaceId?: string;
+  scanMode?: RuntimeScanMode;
   targetModel?: string;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;
