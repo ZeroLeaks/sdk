@@ -1,6 +1,6 @@
 # @zeroleaks/sdk
 
-Official TypeScript SDK for ZeroLeaks. Run hosted red-team probes through your actual application agent—including its model settings, instructions, memory, middleware, tools, and tool execution loop.
+Official TypeScript SDK for ZeroLeaks. Run hosted red-team probes through your actual application agent, including its model settings, instructions, memory, middleware, tools, and tool execution loop.
 
 ## Install
 
