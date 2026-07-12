@@ -258,4 +258,171 @@ describe("ZeroLeaks", () => {
     expect(JSON.stringify(createBody)).toContain("lookup_customer");
     expect(JSON.stringify(createBody)).toContain("properties");
   });
+
+  test("executes runtime relay sessions concurrently", async () => {
+    const completedEvents: unknown[] = [];
+    const events = [
+      {
+        id: "event_a",
+        kind: "invoke",
+        sessionId: "session_a",
+        message: "probe a",
+        claimToken: "claim_a",
+      },
+      {
+        id: "event_b",
+        kind: "invoke",
+        sessionId: "session_b",
+        message: "probe b",
+        claimToken: "claim_b",
+      },
+    ];
+    let activeInvocations = 0;
+    let maxActiveInvocations = 0;
+    const client = new ZeroLeaks({
+      apiKey: "zl_live_test",
+      baseUrl: "https://example.test",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (
+          url.pathname === "/api/v1/runtime-scans" &&
+          request.method === "POST"
+        ) {
+          return jsonResponse(
+            {
+              runtimeScanId: "runtime_parallel",
+              workflowRunId: "workflow_parallel",
+              status: "pending",
+              processingMethod: "sdk-relay",
+            },
+            202
+          );
+        }
+        if (url.pathname.endsWith("/events/next")) {
+          const event = events.shift();
+          return event
+            ? jsonResponse(event)
+            : new Response(null, { status: 204 });
+        }
+        if (url.pathname.includes("/events/")) {
+          completedEvents.push(await request.json());
+          return jsonResponse({ success: true });
+        }
+        if (url.pathname === "/api/v1/runtime-scans/runtime_parallel") {
+          const completed = completedEvents.length === 2;
+          return jsonResponse({
+            _id: "runtime_parallel",
+            status: completed ? "completed" : "running",
+            target: { name: "Parallel target", provider: "custom" },
+            report: completed
+              ? {
+                  overallScore: 100,
+                  overallVulnerability: "secure",
+                  components: {},
+                  attacksRun: 2,
+                  summary: "done",
+                  recommendations: [],
+                  conversationLog: [],
+                  createdAt: 1,
+                }
+              : undefined,
+            createdAt: 1,
+            updatedAt: 1,
+          });
+        }
+        throw new Error(
+          `Unexpected request: ${request.method} ${url.pathname}`
+        );
+      },
+    });
+
+    await client.runtimeScans.run(
+      {
+        describe: () => ({
+          name: "Parallel target",
+          provider: "custom",
+        }),
+        invoke: async ({ message }) => {
+          activeInvocations += 1;
+          maxActiveInvocations = Math.max(
+            maxActiveInvocations,
+            activeInvocations
+          );
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          activeInvocations -= 1;
+          return { text: `refused: ${message}` };
+        },
+      },
+      { eventConcurrency: 2, eventPollIntervalMs: 1 }
+    );
+
+    expect(maxActiveInvocations).toBe(2);
+    expect(completedEvents).toHaveLength(2);
+  });
+
+  test("cancels a runtime scan when its worker stalls", async () => {
+    let cancelled = false;
+    const client = new ZeroLeaks({
+      apiKey: "zl_live_test",
+      baseUrl: "https://example.test",
+      fetch: (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (
+          url.pathname === "/api/v1/runtime-scans" &&
+          request.method === "POST"
+        ) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                runtimeScanId: "runtime_stalled",
+                workflowRunId: "workflow_stalled",
+                status: "pending",
+                processingMethod: "sdk-relay",
+              },
+              202
+            )
+          );
+        }
+        if (url.pathname.endsWith("/events/next")) {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (url.pathname === "/api/v1/runtime-scans/runtime_stalled/cancel") {
+          cancelled = true;
+          return Promise.resolve(jsonResponse({ success: true }));
+        }
+        if (url.pathname === "/api/v1/runtime-scans/runtime_stalled") {
+          return Promise.resolve(
+            jsonResponse({
+              _id: "runtime_stalled",
+              status: "running",
+              currentPhase: "agent probes",
+              workerLastSeenAt: Date.now() - 120_000,
+              target: { name: "Stalled target", provider: "custom" },
+              createdAt: 1,
+              updatedAt: 1,
+            })
+          );
+        }
+        throw new Error(
+          `Unexpected request: ${request.method} ${url.pathname}`
+        );
+      },
+    });
+
+    await expect(
+      client.runtimeScans.run(
+        {
+          describe: () => ({
+            name: "Stalled target",
+            provider: "custom",
+          }),
+          invoke: () => ({ text: "unused" }),
+        },
+        { eventPollIntervalMs: 1, workerStallTimeoutMs: 60_000 }
+      )
+    ).rejects.toThrow("worker stopped making progress");
+    expect(cancelled).toBe(true);
+  });
 });

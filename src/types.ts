@@ -357,6 +357,7 @@ export interface RuntimeScan {
   report?: AgentReport;
   error?: string;
   runnerLastSeenAt?: number;
+  workerLastSeenAt?: number;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -375,7 +376,9 @@ export interface RuntimeScanEvent {
 }
 
 export interface RuntimeRunOptions extends WaitOptions<RuntimeScan> {
+  eventConcurrency?: number;
   eventPollIntervalMs?: number;
+  workerStallTimeoutMs?: number;
   onEvent?: (event: RuntimeScanEvent) => void | Promise<void>;
   scan?: RuntimeScanOptions;
 }

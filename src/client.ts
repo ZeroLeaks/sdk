@@ -37,12 +37,14 @@ import type {
   WaitOptions,
 } from "./types";
 
-const SDK_VERSION = "0.2.0";
+const SDK_VERSION = "0.2.1";
 const DEFAULT_BASE_URL = "https://zeroleaks.ai";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_RUNTIME_EVENT_POLL_INTERVAL_MS = 500;
+const DEFAULT_RUNTIME_EVENT_CONCURRENCY = 8;
+const DEFAULT_RUNTIME_WORKER_STALL_TIMEOUT_MS = 6 * 60 * 1000;
 const TRAILING_SLASH_REGEX = /\/$/;
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -726,6 +728,19 @@ class RuntimeScansApi {
     }
   }
 
+  private ensureWorkerActive(scan: RuntimeScan, stallTimeoutMs: number): void {
+    if (
+      scan.status === "running" &&
+      scan.workerLastSeenAt &&
+      Date.now() - scan.workerLastSeenAt >= stallTimeoutMs
+    ) {
+      throw new ZeroLeaksTimeoutError(
+        `Runtime scan worker stopped making progress during ${scan.currentPhase ?? "the active phase"}`
+      );
+    }
+  }
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: runtime relay coordination handles bounded concurrency, session ordering, polling, and cancellation in one lifecycle.
   async run(
     target: RuntimeScanTarget,
     options: RuntimeRunOptions = {}
@@ -737,6 +752,50 @@ class RuntimeScansApi {
     const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
     const eventPollIntervalMs =
       options.eventPollIntervalMs ?? DEFAULT_RUNTIME_EVENT_POLL_INTERVAL_MS;
+    const eventConcurrency = Math.max(
+      1,
+      Math.min(
+        Math.floor(
+          options.eventConcurrency ?? DEFAULT_RUNTIME_EVENT_CONCURRENCY
+        ),
+        16
+      )
+    );
+    const workerStallTimeoutMs = Math.max(
+      60_000,
+      options.workerStallTimeoutMs ?? DEFAULT_RUNTIME_WORKER_STALL_TIMEOUT_MS
+    );
+    const inFlight = new Map<string, Promise<void>>();
+    const sessionTails = new Map<string, Promise<void>>();
+    let executionError: unknown;
+
+    const scheduleEvent = (event: RuntimeScanEvent): void => {
+      const previous = sessionTails.get(event.sessionId) ?? Promise.resolve();
+      const execution = previous
+        .catch(() => undefined)
+        .then(async () => {
+          await options.onEvent?.(event);
+          await this.executeEvent(
+            target,
+            sessions,
+            created.runtimeScanId,
+            event,
+            options.signal
+          );
+        });
+      sessionTails.set(event.sessionId, execution);
+      const tracked = execution
+        .catch((error: unknown) => {
+          executionError ??= error;
+        })
+        .finally(() => {
+          inFlight.delete(event.id);
+          if (sessionTails.get(event.sessionId) === execution) {
+            sessionTails.delete(event.sessionId);
+          }
+        });
+      inFlight.set(event.id, tracked);
+    };
 
     try {
       while (true) {
@@ -747,22 +806,25 @@ class RuntimeScansApi {
           options.signal
         );
 
-        const event = await this.claimNext(
-          created.runtimeScanId,
-          options.signal
-        );
-        if (event) {
-          await options.onEvent?.(event);
-          await this.executeEvent(
-            target,
-            sessions,
+        let claimedEvent = false;
+        while (inFlight.size < eventConcurrency) {
+          const event = await this.claimNext(
             created.runtimeScanId,
-            event,
             options.signal
           );
+          if (!event) {
+            break;
+          }
+          claimedEvent = true;
+          scheduleEvent(event);
+        }
+
+        if (executionError) {
+          throw executionError;
         }
 
         const scan = await this.get(created.runtimeScanId, options.signal);
+        this.ensureWorkerActive(scan, workerStallTimeoutMs);
         await options.onPoll?.(scan);
         const terminalResult = this.getTerminalResult(
           created.runtimeScanId,
@@ -771,8 +833,15 @@ class RuntimeScansApi {
         if (terminalResult) {
           return terminalResult;
         }
-        if (!event) {
-          await sleep(eventPollIntervalMs, options.signal);
+        if (!claimedEvent) {
+          if (inFlight.size > 0) {
+            await Promise.race([
+              ...inFlight.values(),
+              sleep(eventPollIntervalMs, options.signal),
+            ]);
+          } else {
+            await sleep(eventPollIntervalMs, options.signal);
+          }
         }
       }
     } catch (error) {
