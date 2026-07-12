@@ -1,0 +1,54 @@
+{
+  "name": "@zeroleaks/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for the ZeroLeaks developer API",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts --outdir dist --target node --format esm --sourcemap=external && bun build src/index.ts --outfile dist/index.cjs --target node --format cjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "test": "bun test",
+    "prepublishOnly": "bun run test && bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZeroLeaks/sdk.git"
+  },
+  "homepage": "https://zeroleaks.ai/docs/sdk",
+  "bugs": {
+    "url": "https://github.com/ZeroLeaks/sdk/issues"
+  },
+  "keywords": [
+    "ai-security",
+    "red-team",
+    "prompt-injection",
+    "system-prompt",
+    "sdk"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.4",
+    "typescript": "^7.0.2"
+  }
+}
