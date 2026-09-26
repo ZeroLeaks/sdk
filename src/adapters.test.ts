@@ -11,12 +11,12 @@ describe("AI SDK adapter", () => {
     const tools = {
       lookupCustomer: tool({
         description: "Look up a customer",
-        inputSchema: jsonSchema({
+        inputSchema: jsonSchema<{ id: string }>({
           type: "object",
           properties: { id: { type: "string" } },
           required: ["id"],
         }),
-        outputSchema: jsonSchema({
+        outputSchema: jsonSchema<{ name: string }>({
           type: "object",
           properties: { name: { type: "string" } },
         }),
@@ -73,7 +73,7 @@ describe("AI SDK adapter", () => {
             response: {
               messages: [{ role: "assistant", content: "Customer found" }],
             },
-          }),
+          } as never),
         stream: () => Promise.reject(new Error("not used")),
       },
     });

@@ -1,6 +1,6 @@
 {
   "name": "@zeroleaks/sdk",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Official TypeScript SDK for the ZeroLeaks developer API",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -32,7 +32,8 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts src/ai-sdk.ts src/openai.ts --format esm,cjs --sourcemap --clean --external ai --external openai --out-dir dist && tsc -p tsconfig.json --emitDeclarationOnly",
-    "test": "bun test",
+    "test": "bun run typecheck && bun test",
+    "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "bun run test && bun run build"
   },
   "repository": {
@@ -63,6 +64,7 @@
   "devDependencies": {
     "@types/node": "^25.9.4",
     "ai": "^6.0.209",
+    "bun-types": "^1.4.2",
     "openai": "^6.45.0",
     "tsup": "^8.5.0",
     "typescript": "^7.0.2"

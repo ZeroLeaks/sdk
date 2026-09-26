@@ -4,6 +4,7 @@ import {
   ZeroLeaksScanError,
   ZeroLeaksTimeoutError,
 } from "./errors";
+import { Transport } from "./transport";
 import type {
   AgentConfigInput,
   AgentConfigListResponse,
@@ -37,15 +38,11 @@ import type {
   WaitOptions,
 } from "./types";
 
-const SDK_VERSION = "0.2.2";
-const DEFAULT_BASE_URL = "https://zeroleaks.ai";
-const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_RUNTIME_EVENT_POLL_INTERVAL_MS = 500;
 const DEFAULT_RUNTIME_EVENT_CONCURRENCY = 8;
 const DEFAULT_RUNTIME_WORKER_STALL_TIMEOUT_MS = 6 * 60 * 1000;
-const TRAILING_SLASH_REGEX = /\/$/;
 const TERMINAL_STATUSES = new Set([
   "completed",
   "failed",
@@ -59,28 +56,6 @@ export interface ZeroLeaksOptions {
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
 }
-
-interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
-  body?: unknown;
-  formData?: FormData;
-  query?: Record<string, string | number | boolean | undefined>;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  authenticated?: boolean;
-}
-
-interface ApiErrorPayload {
-  error?: string;
-  message?: string;
-  code?: string;
-  [key: string]: unknown;
-}
-
-const getEnvironmentApiKey = (): string | undefined =>
-  typeof process === "undefined"
-    ? undefined
-    : process.env.ZEROLEAKS_API_KEY?.trim();
 
 const sleep = async (durationMs: number, signal?: AbortSignal) => {
   await new Promise<void>((resolve, reject) => {
@@ -103,45 +78,26 @@ const sleep = async (durationMs: number, signal?: AbortSignal) => {
   });
 };
 
-const buildQueryString = (
-  query?: Record<string, string | number | boolean | undefined>
-): string => {
-  if (!query) {
-    return "";
-  }
+const waitForScan = async <T>(
+  getResult: () => Promise<T>,
+  getStatus: (result: T) => string,
+  timeoutMessage: string,
+  options: WaitOptions<T>
+): Promise<T> => {
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) {
-      params.set(key, String(value));
+  while (true) {
+    const result = await getResult();
+    await options.onPoll?.(result);
+    if (TERMINAL_STATUSES.has(getStatus(result))) {
+      return result;
     }
-  }
-  const encoded = params.toString();
-  return encoded ? `?${encoded}` : "";
-};
-
-const parseRetryAfter = (value: string | null): number | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1000);
-  }
-  const date = Date.parse(value);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
-};
-
-const readResponsePayload = async (response: Response): Promise<unknown> => {
-  const text = await response.text();
-  if (!text) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new ZeroLeaksTimeoutError(timeoutMessage);
+    }
+    await sleep(pollIntervalMs, options.signal);
   }
 };
 
@@ -215,133 +171,6 @@ const normalizeRuntimeTargetResponse = (
   return value;
 };
 
-const createResponseError = (
-  response: Response,
-  payload: unknown
-): ZeroLeaksError => {
-  const errorPayload =
-    payload && typeof payload === "object"
-      ? (payload as ApiErrorPayload)
-      : undefined;
-
-  return new ZeroLeaksError(
-    errorPayload?.error ??
-      errorPayload?.message ??
-      `ZeroLeaks API request failed with status ${response.status}`,
-    {
-      status: response.status,
-      code: errorPayload?.code,
-      details: payload,
-      requestId:
-        response.headers.get("x-request-id") ??
-        response.headers.get("x-vercel-id") ??
-        undefined,
-      retryAfterMs: parseRetryAfter(response.headers.get("retry-after")),
-    }
-  );
-};
-
-class Transport {
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
-  private readonly defaultTimeoutMs: number;
-  private readonly fetchImplementation: typeof globalThis.fetch;
-
-  constructor(options: ZeroLeaksOptions) {
-    const apiKey = options.apiKey?.trim() || getEnvironmentApiKey();
-    if (!apiKey) {
-      throw new ZeroLeaksError(
-        "Missing ZeroLeaks API key. Pass apiKey or set ZEROLEAKS_API_KEY.",
-        { code: "MISSING_API_KEY" }
-      );
-    }
-    if (!apiKey.startsWith("zl_live_")) {
-      throw new ZeroLeaksError("ZeroLeaks API keys must start with zl_live_.", {
-        code: "INVALID_API_KEY",
-      });
-    }
-
-    this.apiKey = apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(
-      TRAILING_SLASH_REGEX,
-      ""
-    );
-    this.defaultTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.fetchImplementation = options.fetch ?? globalThis.fetch;
-    if (!this.fetchImplementation) {
-      throw new ZeroLeaksError(
-        "No fetch implementation is available. Use Node.js 18+, Bun, or pass fetch.",
-        { code: "MISSING_FETCH" }
-      );
-    }
-  }
-
-  async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const method = options.method ?? "GET";
-    const controller = new AbortController();
-    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
-    const timeout = setTimeout(
-      () => controller.abort(new ZeroLeaksTimeoutError()),
-      timeoutMs
-    );
-    const onAbort = () => controller.abort(options.signal?.reason);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
-    try {
-      const headers = new Headers({
-        Accept: "application/json",
-        "X-ZeroLeaks-SDK": `typescript/${SDK_VERSION}`,
-      });
-      if (options.authenticated !== false) {
-        headers.set("Authorization", `Bearer ${this.apiKey}`);
-      }
-
-      let body: BodyInit | undefined;
-      if (options.formData) {
-        body = options.formData;
-      } else if (options.body !== undefined) {
-        headers.set("Content-Type", "application/json");
-        body = JSON.stringify(options.body);
-      }
-
-      const response = await this.fetchImplementation(
-        `${this.baseUrl}${path}${buildQueryString(options.query)}`,
-        {
-          method,
-          headers,
-          body,
-          signal: controller.signal,
-        }
-      );
-
-      const payload = await readResponsePayload(response);
-
-      if (!response.ok) {
-        throw createResponseError(response, payload);
-      }
-
-      return payload as T;
-    } catch (error) {
-      if (error instanceof ZeroLeaksError) {
-        throw error;
-      }
-      if (options.signal?.aborted) {
-        throw new ZeroLeaksAbortError(undefined, error);
-      }
-      if (controller.signal.aborted) {
-        throw new ZeroLeaksTimeoutError(undefined, error);
-      }
-      throw new ZeroLeaksError("Unable to reach the ZeroLeaks API", {
-        code: "NETWORK_ERROR",
-        cause: error,
-      });
-    } finally {
-      clearTimeout(timeout);
-      options.signal?.removeEventListener("abort", onAbort);
-    }
-  }
-}
-
 class ScansApi {
   private readonly reports: ReportsApi;
   private readonly transport: Transport;
@@ -351,6 +180,14 @@ class ScansApi {
     this.reports = reports;
   }
 
+  /**
+   * @deprecated Prompt scans are retired. The server answers 410 Gone and this
+   * call rejects with a `ZeroLeaksError` whose `code` is
+   * `"PROMPT_SCANS_RETIRED"`. Use `agentScans.run` or `runtimeScans.run` to
+   * test a deployed agent, or the source-available CLI (`npm i -g zeroleaks`) for a
+   * standalone prompt. `get`, `list`, `cancel`, and `wait` keep working for
+   * historical scans.
+   */
   create(input: CreateScanRequest): Promise<CreateScanResponse> {
     return this.transport.request("/api/v1/scans", {
       method: "POST",
@@ -382,23 +219,19 @@ class ScansApi {
     scanId: string,
     options: WaitOptions<ScanResult> = {}
   ): Promise<ScanResult> {
-    const startedAt = Date.now();
-    const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-
-    while (true) {
-      const result = await this.get(scanId, options.signal);
-      await options.onPoll?.(result);
-      if (TERMINAL_STATUSES.has(result.scan.status)) {
-        return result;
-      }
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new ZeroLeaksTimeoutError(`Timed out waiting for scan ${scanId}`);
-      }
-      await sleep(pollIntervalMs, options.signal);
-    }
+    return await waitForScan(
+      () => this.get(scanId, options.signal),
+      (result) => result.scan.status,
+      `Timed out waiting for scan ${scanId}`,
+      options
+    );
   }
 
+  /**
+   * @deprecated Prompt scans are retired. Rejects with the same
+   * `PROMPT_SCANS_RETIRED` `ZeroLeaksError` as `create` before any polling
+   * starts. Use `agentScans.run` or `runtimeScans.run` instead.
+   */
   async run(
     input: CreateScanRequest,
     options: WaitOptions<ScanResult> = {}
@@ -520,23 +353,12 @@ class AgentScansApi {
     scanId: string,
     options: WaitOptions<AgentScanResult> = {}
   ): Promise<AgentScanResult> {
-    const startedAt = Date.now();
-    const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-
-    while (true) {
-      const result = await this.get(scanId, options.signal);
-      await options.onPoll?.(result);
-      if (TERMINAL_STATUSES.has(result.scan.status)) {
-        return result;
-      }
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new ZeroLeaksTimeoutError(
-          `Timed out waiting for agent scan ${scanId}`
-        );
-      }
-      await sleep(pollIntervalMs, options.signal);
-    }
+    return await waitForScan(
+      () => this.get(scanId, options.signal),
+      (result) => result.scan.status,
+      `Timed out waiting for agent scan ${scanId}`,
+      options
+    );
   }
 
   async run(
@@ -916,23 +738,12 @@ class SkillScansApi {
     scanId: string,
     options: WaitOptions<SkillScanResult> = {}
   ): Promise<SkillScanResult> {
-    const startedAt = Date.now();
-    const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-
-    while (true) {
-      const result = await this.get(scanId, options.signal);
-      await options.onPoll?.(result);
-      if (TERMINAL_STATUSES.has(result.status)) {
-        return result;
-      }
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new ZeroLeaksTimeoutError(
-          `Timed out waiting for skill scan ${scanId}`
-        );
-      }
-      await sleep(pollIntervalMs, options.signal);
-    }
+    return await waitForScan(
+      () => this.get(scanId, options.signal),
+      (result) => result.status,
+      `Timed out waiting for skill scan ${scanId}`,
+      options
+    );
   }
 
   async run(

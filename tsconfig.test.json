@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  // Only the bun:test declarations: Bun's globals redefine fetch, and the
+  // tests should compile against the Node and DOM types SDK users have.
+  "include": ["src/**/*.ts", "node_modules/bun-types/test.d.ts"],
+  "exclude": []
+}

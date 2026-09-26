@@ -1,6 +1,8 @@
 # @zeroleaks/sdk
 
-Official TypeScript SDK for ZeroLeaks. Run hosted red-team probes through your actual application agent, including its model settings, instructions, memory, middleware, tools, and tool execution loop.
+<p><img src="./assets/zeroleaks-sdk.svg" alt="ZeroLeaks SDK" width="88" height="88" /></p>
+
+Official TypeScript SDK for ZeroLeaks. Run hosted red-team scans through your actual application agent, with its model settings, instructions, memory, middleware, tools, and tool execution loop, or against a deployed HTTPS endpoint.
 
 ## Install
 
@@ -46,9 +48,28 @@ const { report } = await zeroleaks.runtimeScans.run(target, {
 });
 ```
 
-Full mode is the default. It runs extraction, adaptive injection, the complete production probe catalog, and target-specific agent probes in parallel while checkpointing long extraction scans. Use `scan: { scanMode: "quick" }` only for a smaller development smoke test.
+Full mode is the default. After a short reconnaissance step, it runs three tracks in parallel: secrets in context (credentials, rules, tool schemas, and internal hosts the agent leaks), adaptive injection, and target-specific agent probes including the complete production probe catalog. Use `scan: { scanMode: "quick" }` only for a smaller development smoke test.
 
-Upgrade with `bun add @zeroleaks/sdk@^0.2.2` or `npm install @zeroleaks/sdk@^0.2.2`. This release does not require application code changes.
+A scan reports what to fix; it does not rerun exploits against the fixed agent. The next scan runs the same attacks again.
+
+## Changes in v0.3.0
+
+Hosted prompt scans are retired. `scans.create` and `scans.run` are deprecated: the server answers `410 Gone`, and both reject with a `ZeroLeaksError` whose `code` is `PROMPT_SCANS_RETIRED`, so `scans.run` never starts polling. `ScanMode`, `CreateScanRequest`, and `CreateScanResponse` are deprecated with them. `scans.get`, `scans.list`, `scans.wait`, and `scans.cancel` still work for historical scans.
+
+`CapabilitiesResponse` makes the prompt-scan fields `scanModes`, `targetModels`, `defaultTargetModel`, and `limits.minimumSystemPromptCharacters` optional, and adds `promptScans` (the retirement notice and its replacements) and `deprecations`.
+
+`AgentReport` types the findings in each component and all of `boundaryAssurance`: the secrets-in-context summary, defense fingerprints, long-horizon campaign state, and `searchTree`, the bounded attack-path search with every path it explored or pruned and why. Secrets-in-context findings carry `leakClass`, `evidenceStrength`, and, for judge-only leaks, `claimedSpan`. `EndpointConfigInput` takes a write-only `plantedSecret` canary.
+
+```typescript
+const { report } = await zeroleaks.endpointScans.run(endpointConfigId);
+for (const leak of report?.boundaryAssurance?.secretsInContext?.leaks ?? []) {
+  console.log(leak.class, leak.severity, leak.evidence);
+}
+```
+
+Three type changes can break a build. `components` was `Record<string, unknown>` and now names `promptSecurity`, `toolSafety`, `multiTurnResilience`, and `dataLeakage`; indexing it with a string still compiles, but a report you build by hand in a test needs all four. `boundaryAssurance` was `unknown` in 0.2.2 and is now `BoundaryAssurance | undefined`, so a hand-built fixture needs every required field (`generatedBy`, `usedFallback`, `invariants`, `initialProbes`, `mutatedProbes`, `violations`, `retrievedSeedIds`, `promotedProbes`), and a cast to your own interface has to go through `unknown`. Code that reads the now-optional capabilities fields has to handle `undefined`.
+
+Upgrade with `bun add @zeroleaks/sdk@^0.3.0` or `npm install @zeroleaks/sdk@^0.3.0`.
 
 ## AI SDK
 
@@ -84,16 +105,17 @@ Both Responses API and Chat Completions function-tool loops are supported.
 ## Other scans
 
 ```typescript
-await zeroleaks.scans.run({ systemPrompt, scanMode: "full" });
 await zeroleaks.endpointScans.run(endpointConfigId);
 await zeroleaks.skillScans.run({ source: skillRepository, mode: "full" });
 ```
+
+Hosted prompt scans are retired (see [v0.3.0](#changes-in-v030)). To test a standalone system prompt, run the source-available (FSL) [`zeroleaks`](https://www.npmjs.com/package/zeroleaks) CLI locally with your own model keys.
 
 `agentConfigs` and `agentScans` remain compatibility aliases for `endpointConfigs` and `endpointScans`.
 
 ## Security
 
-Run runtime scans with the same policy and tool-control code as production, but use isolated databases, test tenants, sink integrations, and scan-specific credentials for tools that can create irreversible side effects.
+Run runtime scans with the same policy and tool-control code as production, but use isolated databases, test tenants, sink integrations, and scan-specific credentials for tools that can create irreversible side effects. ZeroLeaks rewrites external destinations in attack payloads to `.invalid` canary hosts, but your tools still execute whatever the agent asks them to.
 
 API keys are server credentials. Never expose them in browser bundles.
 
