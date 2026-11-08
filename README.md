@@ -1,7 +1,5 @@
 # @zeroleaks/sdk
 
-<p><img src="./assets/zeroleaks-sdk.svg" alt="ZeroLeaks SDK" width="88" height="88" /></p>
-
 Official TypeScript SDK for ZeroLeaks. Run hosted red-team scans through your actual application agent, with its model settings, instructions, memory, middleware, tools, and tool execution loop, or against a deployed HTTPS endpoint.
 
 ## Install
