@@ -197,6 +197,12 @@ export interface AgentRequestFormat {
   toolCallsField?: string;
   finishReasonField?: string;
   usageField?: string;
+  /**
+   * Body field for real file artifacts. When set, artifact probes send
+   * `[{ filename, mediaType, dataBase64 }]` there instead of pasting the
+   * file's text into the message. Ignored with `bodyTemplate` and `GET`.
+   */
+  attachmentsField?: string;
 }
 
 export interface AgentConfigInput {
@@ -218,6 +224,11 @@ export interface AgentConfigInput {
   plantedSecret?: string;
   workspaceId?: string;
 }
+
+/** Fields for a partial update; omitted fields keep their stored values. */
+export type AgentConfigUpdateInput = Partial<
+  Omit<AgentConfigInput, "workspaceId">
+>;
 
 export interface AgentConfig
   extends Omit<AgentConfigInput, "authValue" | "plantedSecret"> {
@@ -284,6 +295,19 @@ export interface BoundaryInvariant {
   severity: "critical" | "high" | "medium" | "low";
 }
 
+export type ControlLayer =
+  | "permission"
+  | "tool_arguments"
+  | "egress"
+  | "approval"
+  | "data_access"
+  | "identity"
+  | "memory"
+  | "inter_agent"
+  | "untrusted_content"
+  | "output_filter"
+  | "instructions";
+
 export interface AgentFinding {
   category: string;
   technique: string;
@@ -292,7 +316,10 @@ export interface AgentFinding {
   attackPrompt: string;
   agentResponse: string;
   confidence?: number;
+  /** The change that closes the finding. Set on every agent and runtime finding. */
   remediation?: string;
+  /** Where the fix belongs: the control that failed. */
+  controlLayer?: ControlLayer;
   observedAction?: string;
   boundaryInvariant?: BoundaryInvariant;
   /** Secrets-in-context findings only. */
@@ -486,6 +513,40 @@ export interface BoundaryAssurance {
     confidence?: number;
     judgeVotes?: number;
   }>;
+  /**
+   * Fix verification: findings from the agent's previous scans, replayed in
+   * this scan. Absent on reports created before replay existed.
+   */
+  regressionReplay?: RegressionReplay;
+}
+
+export type RegressionStatus = "new" | "still_open" | "fixed" | "regressed";
+
+export interface RegressionReplay {
+  /** The agent's previous completed scan, when there was one. */
+  priorScanId?: string;
+  replayed: number;
+  fixed: number;
+  stillOpen: number;
+  /** Findings that were fixed in an earlier scan and landed again. */
+  regressed: number;
+  newFindings: number;
+  /** Earlier findings past the per-scan replay cap, carried to the next scan. */
+  notRetested: number;
+  cases: Array<{
+    key: string;
+    kind: "boundary" | "probe";
+    category: string;
+    technique: string;
+    severity: FindingSeverity;
+    status: RegressionStatus;
+    turns: string[];
+    invariant?: { id: string; title: string };
+    firstSeenScanId: string;
+    lastViolatedScanId: string;
+    heldFixedScans: number;
+    retested?: boolean;
+  }>;
 }
 
 export interface AgentReport {
@@ -513,15 +574,45 @@ export interface AgentReport {
   [key: string]: unknown;
 }
 
+/** What started a scan: the dashboard, a schedule, or the REST API or SDK. */
+export type AgentScanTrigger = "manual" | "scheduled" | "api";
+
+/**
+ * A completed scan against the same agent's previous completed scan. Use it
+ * in CI to fail on a score drop or a regressed fix.
+ */
+export interface AgentScanComparison {
+  previousScanId: string;
+  previousScore: number;
+  /** This scan's score minus the previous one; null until the report exists. */
+  scoreDelta: number | null;
+  scoreDropped: boolean;
+  regressions: {
+    replayed: number;
+    fixed: number;
+    stillOpen: number;
+    regressed: number;
+    newFindings: number;
+  } | null;
+}
+
 export interface AgentScanResult {
   scan: AgentScan;
+  /** Absent from servers older than scheduled scans. */
+  trigger?: AgentScanTrigger;
   config: AgentConfig | null;
   report: AgentReport | null;
+  /**
+   * Set once the scan completes and the agent has an earlier completed scan;
+   * null otherwise. Absent from servers older than this field.
+   */
+  comparison?: AgentScanComparison | null;
 }
 
 export interface AgentScanListItem {
   id: string;
   status: ScanStatus;
+  trigger?: AgentScanTrigger;
   currentPhase?: string;
   agentConfigId: string;
   agentName: string;
@@ -540,6 +631,7 @@ export type EndpointTool = AgentTool;
 export type EndpointAuthMethod = AgentAuthMethod;
 export type EndpointRequestFormat = AgentRequestFormat;
 export type EndpointConfigInput = AgentConfigInput;
+export type EndpointConfigUpdateInput = AgentConfigUpdateInput;
 export type EndpointConfig = AgentConfig;
 export type EndpointScan = AgentScan;
 export type EndpointReport = AgentReport;
@@ -664,7 +756,18 @@ export type SkillScanMode = "review" | "risk" | "behavior" | "full";
 export type SkillToolProfile = "readonly" | "standard" | "networked";
 
 export interface CreateSkillScanRequest {
+  /**
+   * A skill repository, skills.sh URL, or direct SKILL.md URL. With
+   * `sourceType: "mcp"`, the Streamable HTTP URL of an MCP server.
+   */
   source: string;
+  /** `"mcp"` scans an MCP server's declared tools, prompts, and resources. */
+  sourceType?: "skill" | "mcp";
+  /**
+   * Authorization header value for an MCP server, e.g. `Bearer <token>`.
+   * Stored encrypted and deleted when the scan finishes.
+   */
+  mcpAuthorization?: string;
   skill?: string;
   delivery?: "async" | "sync";
   webhookUrl?: string;

@@ -15,6 +15,25 @@ const jsonResponse = (body: unknown, status = 200): Response =>
     headers: { "Content-Type": "application/json" },
   });
 
+const readCompletion = async (
+  request: Request
+): Promise<Record<string, unknown>> => {
+  const body = (await request.json()) as {
+    claimToken: string;
+    encoding: string;
+    payload: string;
+  };
+  if (body.encoding !== "base64+json") {
+    throw new Error(`Unexpected completion encoding: ${body.encoding}`);
+  }
+  return {
+    claimToken: body.claimToken,
+    ...(JSON.parse(
+      Buffer.from(body.payload, "base64").toString("utf8")
+    ) as Record<string, unknown>),
+  };
+};
+
 const promptScansRetired = {
   error: "Prompt scans are retired",
   code: "PROMPT_SCANS_RETIRED",
@@ -361,7 +380,7 @@ describe("ZeroLeaks", () => {
             : new Response(null, { status: 204 });
         }
         if (url.pathname.includes("/events/")) {
-          completedEvents.push(await request.json());
+          completedEvents.push(await readCompletion(request));
           return jsonResponse({ success: true });
         }
         if (url.pathname === "/api/v1/runtime-scans/runtime_1") {
@@ -482,7 +501,7 @@ describe("ZeroLeaks", () => {
             : new Response(null, { status: 204 });
         }
         if (url.pathname.includes("/events/")) {
-          completedEvents.push(await request.json());
+          completedEvents.push(await readCompletion(request));
           return jsonResponse({ success: true });
         }
         if (url.pathname === "/api/v1/runtime-scans/runtime_parallel") {

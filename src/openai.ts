@@ -1,6 +1,13 @@
 import type OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions/completions";
 import type { ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
+import {
+  describeToolContainment,
+  isSimulatedToolResult,
+  resolveToolContainment,
+  runContainedTool,
+  type ToolContainmentOption,
+} from "./containment";
 import type {
   AgentTool,
   RuntimeScanTarget,
@@ -23,6 +30,11 @@ export type OpenAIToolExecutor = (
 
 interface OpenAITargetBaseOptions {
   client: OpenAI;
+  /**
+   * Simulate side-effecting and egress tool calls during the scan instead of
+   * running them. On by default; pass `false` to run every tool for real.
+   */
+  containment?: ToolContainmentOption;
   maxToolRounds?: number;
   metadata?: unknown;
   name?: string;
@@ -161,18 +173,29 @@ const runTool = async (
   toolCallId: string,
   toolName: string,
   input: unknown
-): Promise<{ error?: string; output: string; value?: unknown }> => {
+): Promise<{
+  contained?: boolean;
+  error?: string;
+  output: string;
+  value?: unknown;
+}> => {
   const executor = options.toolExecutors?.[toolName];
   if (!executor) {
     throw new Error(`No executor configured for OpenAI tool ${toolName}`);
   }
+  const args = asRecord(input) ?? { value: input };
   try {
-    const value = await executor(asRecord(input) ?? { value: input }, {
-      invocation,
-      toolCallId,
+    const value = await runContainedTool(
       toolName,
-    });
-    return { output: safeToolOutput(value), value };
+      args,
+      () => executor(args, { invocation, toolCallId, toolName }),
+      resolveToolContainment(options.containment)
+    );
+    return {
+      output: safeToolOutput(value),
+      value,
+      contained: isSimulatedToolResult(value) || undefined,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (options.toolErrorMode === "throw") {
@@ -261,6 +284,7 @@ const executeResponsesToolCalls = async (
       arguments: toolInput,
       result: result.value,
       error: result.error,
+      contained: result.contained,
     });
     outputs.push({
       type: "function_call_output",
@@ -355,6 +379,7 @@ const executeChatToolCalls = async (
       arguments: toolInput,
       result: result.value,
       error: result.error,
+      contained: result.contained,
     });
     messages.push({
       role: "tool",
@@ -436,6 +461,9 @@ export const createOpenAIResponsesTarget = (
       tools: serializeResponsesTools(options.request.tools),
       metadata: {
         adapter: "openai-responses",
+        containment: describeToolContainment(
+          resolveToolContainment(options.containment)
+        ),
         ...asRecord(options.metadata),
       },
     }),
@@ -457,6 +485,9 @@ export const createOpenAIChatCompletionsTarget = (
       tools: serializeChatTools(options.request.tools),
       metadata: {
         adapter: "openai-chat-completions",
+        containment: describeToolContainment(
+          resolveToolContainment(options.containment)
+        ),
         ...asRecord(options.metadata),
       },
     }),

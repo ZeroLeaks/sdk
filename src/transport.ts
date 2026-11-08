@@ -5,7 +5,7 @@ import {
   ZeroLeaksTimeoutError,
 } from "./errors";
 
-const SDK_VERSION = "0.3.0";
+const SDK_VERSION = "0.5.0";
 const DEFAULT_BASE_URL = "https://zeroleaks.ai";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const TRAILING_SLASH_REGEX = /\/$/;

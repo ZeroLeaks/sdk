@@ -6,6 +6,14 @@ import type {
   ToolSet,
 } from "ai";
 import { asSchema, ToolLoopAgent } from "ai";
+import {
+  describeToolContainment,
+  isSimulatedToolResult,
+  resolveToolContainment,
+  runContainedTool,
+  type ToolContainmentOption,
+  type ToolContainmentPolicy,
+} from "./containment";
 import type {
   AgentTool,
   RuntimeScanTarget,
@@ -15,13 +23,23 @@ import type {
   RuntimeToolCall,
 } from "./types";
 
+/** AI SDK 7 bounds runtime context by this type but does not export it. */
+type RuntimeContext = Record<string, unknown>;
+
 export interface AISDKAgentTargetOptions<
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   OUTPUT extends Output.Output,
+  RUNTIME_CONTEXT extends RuntimeContext = RuntimeContext,
 > {
-  agent: Agent<CALL_OPTIONS, TOOLS, OUTPUT>;
+  agent: Agent<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>;
   callOptions?: CALL_OPTIONS;
+  /**
+   * Whether the agent's tools were wrapped with `containTools` before the
+   * agent was built. A prebuilt agent's tools can't be wrapped from here, so
+   * this only labels the scan; it does not contain anything by itself.
+   */
+  containedTools?: boolean;
   instructions?: unknown;
   invocationMode?: "generate" | "stream";
   metadata?: unknown;
@@ -34,8 +52,14 @@ export type AISDKToolLoopTargetOptions<
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   OUTPUT extends Output.Output,
-> = ToolLoopAgentSettings<CALL_OPTIONS, TOOLS, OUTPUT> & {
+  RUNTIME_CONTEXT extends RuntimeContext = RuntimeContext,
+> = ToolLoopAgentSettings<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT> & {
   callOptions?: CALL_OPTIONS;
+  /**
+   * Simulate side-effecting and egress tool calls during the scan instead of
+   * running them. On by default; pass `false` to run every tool for real.
+   */
+  containment?: ToolContainmentOption;
   invocationMode?: "generate" | "stream";
   metadata?: unknown;
   name?: string;
@@ -79,6 +103,49 @@ const serializableToolDefinition = (
   }
   return definition;
 };
+
+const wrapToolSet = <TOOLS extends ToolSet>(
+  tools: TOOLS,
+  policy: ToolContainmentPolicy | null
+): TOOLS => {
+  if (!policy) {
+    return tools;
+  }
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, rawTool] of Object.entries(tools)) {
+    const tool = rawTool as unknown as Record<string, unknown>;
+    const execute = tool.execute;
+    wrapped[name] =
+      typeof execute === "function"
+        ? {
+            ...tool,
+            execute: (input: unknown, context: unknown) =>
+              runContainedTool(
+                name,
+                input,
+                () =>
+                  (execute as (a: unknown, b: unknown) => unknown)(
+                    input,
+                    context
+                  ),
+                policy
+              ),
+          }
+        : tool;
+  }
+  return wrapped as TOOLS;
+};
+
+/**
+ * Wrap an AI SDK tool set so side-effecting and egress calls return a
+ * simulated result during a runtime scan. Use it when you build your own
+ * agent and pass it to `aiSdk({ agent, containedTools: true })`; the
+ * tool-loop form of `aiSdk` applies it for you.
+ */
+export const containTools = <TOOLS extends ToolSet>(
+  tools: TOOLS,
+  containment: ToolContainmentOption = true
+): TOOLS => wrapToolSet(tools, resolveToolContainment(containment));
 
 export const serializeAISDKTools = async (
   tools: ToolSet = {}
@@ -159,6 +226,7 @@ const normalizeToolTrace = async (
         name: call.toolName,
         arguments: call.input,
         result: toolResult?.output,
+        contained: isSimulatedToolResult(toolResult?.output) || undefined,
         error:
           typeof toolResult?.error === "string" ? toolResult.error : undefined,
         providerExecuted:
@@ -201,6 +269,7 @@ const createTargetFromAgent = (
   agent: AgentExecutor,
   options: {
     callOptions?: unknown;
+    containment: ReturnType<typeof describeToolContainment> | "unknown";
     instructions?: unknown;
     invocationMode?: "generate" | "stream";
     metadata?: unknown;
@@ -218,6 +287,7 @@ const createTargetFromAgent = (
     metadata: {
       adapter: "ai-sdk",
       invocationMode: options.invocationMode ?? "generate",
+      containment: options.containment,
       ...asRecord(options.metadata),
     },
   }),
@@ -241,17 +311,29 @@ export const createAISDKAgentTarget = <
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   OUTPUT extends Output.Output,
+  RUNTIME_CONTEXT extends RuntimeContext = RuntimeContext,
 >(
-  options: AISDKAgentTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT>
+  options: AISDKAgentTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT, RUNTIME_CONTEXT>
 ): RuntimeScanTarget =>
-  createTargetFromAgent(options.agent as unknown as AgentExecutor, options);
+  createTargetFromAgent(options.agent as unknown as AgentExecutor, {
+    ...options,
+    containment: options.containedTools
+      ? describeToolContainment({})
+      : "unknown",
+  });
 
 export const createAISDKToolLoopTarget = <
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   OUTPUT extends Output.Output,
+  RUNTIME_CONTEXT extends RuntimeContext = RuntimeContext,
 >(
-  options: AISDKToolLoopTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT>
+  options: AISDKToolLoopTargetOptions<
+    CALL_OPTIONS,
+    TOOLS,
+    OUTPUT,
+    RUNTIME_CONTEXT
+  >
 ): RuntimeScanTarget => {
   const {
     invocationMode,
@@ -259,15 +341,26 @@ export const createAISDKToolLoopTarget = <
     name,
     provider,
     callOptions,
+    containment,
     ...agentSettings
   } = options;
+  const policy = resolveToolContainment(containment);
+  if (agentSettings.tools) {
+    agentSettings.tools = wrapToolSet(agentSettings.tools, policy);
+  }
   const agent = new ToolLoopAgent(
-    agentSettings as ToolLoopAgentSettings<CALL_OPTIONS, TOOLS, OUTPUT>
+    agentSettings as ToolLoopAgentSettings<
+      CALL_OPTIONS,
+      TOOLS,
+      RUNTIME_CONTEXT,
+      OUTPUT
+    >
   );
   const model = asRecord(agentSettings.model);
   return createTargetFromAgent(agent as unknown as AgentExecutor, {
     instructions: agentSettings.instructions,
     callOptions,
+    containment: describeToolContainment(policy),
     invocationMode,
     metadata,
     model: typeof model?.modelId === "string" ? model.modelId : undefined,
@@ -282,10 +375,11 @@ export function aiSdk<
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   OUTPUT extends Output.Output,
+  RUNTIME_CONTEXT extends RuntimeContext = RuntimeContext,
 >(
   options:
-    | AISDKAgentTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT>
-    | AISDKToolLoopTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT>
+    | AISDKAgentTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT, RUNTIME_CONTEXT>
+    | AISDKToolLoopTargetOptions<CALL_OPTIONS, TOOLS, OUTPUT, RUNTIME_CONTEXT>
 ): RuntimeScanTarget;
 export function aiSdk(options: unknown): RuntimeScanTarget {
   if (!(options && typeof options === "object")) {

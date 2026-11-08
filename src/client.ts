@@ -4,10 +4,12 @@ import {
   ZeroLeaksScanError,
   ZeroLeaksTimeoutError,
 } from "./errors";
+import { encodeRuntimeEventCompletion } from "./event-payload";
 import { Transport } from "./transport";
 import type {
   AgentConfigInput,
   AgentConfigListResponse,
+  AgentConfigUpdateInput,
   AgentReport,
   AgentScanListResponse,
   AgentScanResult,
@@ -298,9 +300,10 @@ class AgentConfigsApi {
     });
   }
 
+  /** Partial update: omitted fields keep their stored values. */
   update(
     configId: string,
-    input: AgentConfigInput
+    input: AgentConfigUpdateInput
   ): Promise<{ success: boolean }> {
     return this.transport.request(`/api/v1/agent-configs/${configId}`, {
       method: "PATCH",
@@ -442,7 +445,13 @@ class RuntimeScansApi {
   ): Promise<{ success: boolean }> {
     return this.transport.request(
       `/api/v1/runtime-scans/${runtimeScanId}/events/${eventId}`,
-      { method: "POST", body }
+      {
+        method: "POST",
+        body: encodeRuntimeEventCompletion(body.claimToken, {
+          error: body.error,
+          response: body.response,
+        }),
+      }
     );
   }
 
